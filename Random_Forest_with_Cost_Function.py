@@ -2,43 +2,30 @@
 # coding: utf-8
 
 """
-Cost-Sensitive Random Forest Model for Diabetes Readmission Prediction
-======================================================================
-This script implements a cost-sensitive Random Forest model that accounts for 
-the high cost of missed readmissions ($15,000 per missed case).
+Cost-Sensitive Random Forest Model with Lower Cost Scenario
+==========================================================
+This script implements a Random Forest model with a different cost structure:
+- Lower cost of missed readmission: $11,000 (instead of $15,000)
+- Much lower cost of prevention intervention: $2,800 (instead of $6,600 or $8,400)
 
-The implementation builds upon the existing Random Forest model from the 
-Basic_Solution_Python.py script, but adds cost-sensitive learning to prioritize 
-identifying potential readmissions.
+This represents a scenario where readmissions are less costly but interventions are 
+significantly more affordable, potentially making them economically viable for more patients.
 """
 
 # Import Libraries
 # ----------------
-
-# Data manipulation
 import pandas as pd
 import numpy as np
 import re
-
-# Data visualization
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-# Data preprocessing
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-
-# Feature selection
-from sklearn.feature_selection import SelectFromModel, RFE
+from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
-
-# Handling imbalanced data
 from imblearn.over_sampling import SMOTE
-
-# Model building and evaluation
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, classification_report, confusion_matrix, 
-    roc_curve, auc, precision_recall_curve, average_precision_score
+    roc_curve, auc
 )
 
 # Visualization settings
@@ -48,37 +35,32 @@ plt.style.use('seaborn-v0_8-whitegrid')  # Updated style for newer matplotlib ve
 # For reproducibility
 np.random.seed(100)
 
-print("Cost-Sensitive Random Forest Model for Diabetes Readmission Prediction")
+print("Cost-Sensitive Random Forest Model with Lower Cost Scenario")
 print("="*80)
 
 # Cost Parameters
 # --------------
-READMISSION_COST = 15000  # Cost of a readmission in dollars
-FALSE_POSITIVE_COST = 100  # Estimated cost of unnecessary intervention
-COST_RATIO = READMISSION_COST / FALSE_POSITIVE_COST  # Ratio for class weighting
+READMISSION_COST = 11000  # Lower cost of a readmission in dollars
+INTERVENTION_COST = 4000  # Much lower cost of preventive intervention
 
 print(f"Cost parameters:")
 print(f"- Readmission cost: ${READMISSION_COST}")
-print(f"- False positive cost: ${FALSE_POSITIVE_COST}")
-print(f"- Cost ratio: {COST_RATIO:.1f}:1")
+print(f"- Intervention cost: ${INTERVENTION_COST}")
+print(f"- Net benefit per prevented readmission: ${READMISSION_COST - INTERVENTION_COST}")
+print(f"- Cost ratio (readmission:intervention): {READMISSION_COST/INTERVENTION_COST:.1f}:1")
 print("")
 
 # Load and Preprocess Data
 # -----------------------
-# We'll reuse the same preprocessing steps from the original script
-
 try:
-    # Try to load from local file
     df = pd.read_csv('diabetic_readmission_data.csv')
     print(f"Dataset dimensions: {df.shape}")
 except FileNotFoundError:
     print("Error: Dataset file not found.")
     print("Please ensure 'diabetic_readmission_data.csv' is in the working directory.")
-    print("Original dataset can be found at: https://archive.ics.uci.edu/ml/datasets/Diabetes+130-US+hospitals+for+years+1999-2008")
     exit(1)
 
-# Data Preprocessing (Abbreviated from original script)
-# ----------------------------------------------------
+# Data Preprocessing 
 print("Preprocessing data...")
 
 # Replace '?' with NaN
@@ -178,18 +160,9 @@ for col in df_encoded.columns:
 df_encoded['readmitted_binary'] = df_encoded['readmitted'].map({'<30': 1, '>30': 1, 'NO': 0})
 
 # Feature Selection
-# ----------------
 print("Selecting features...")
 
-# Define features to use
-numeric_features = [
-    'admission_type_id', 'discharge_disposition_id', 'admission_source_id',
-    'time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_medications',
-    'number_outpatient', 'number_emergency', 'number_inpatient', 'number_diagnoses',
-    'age_midpoint'
-]
-
-# Select features (using a simplified approach for this version)
+# Select features
 available_features = []
 for feat in df_encoded.columns:
     # Skip IDs, original target, and diagnosis codes
@@ -244,8 +217,73 @@ print("\nTraining set after SMOTE balancing:")
 print(f"No Readmission (0): {sum(y_train_balanced == 0)} (50.0%)")
 print(f"Readmission (1): {sum(y_train_balanced == 1)} (50.0%)")
 
+# Simple Cost Calculation Function
+# -------------------------------
+def calculate_costs(y_true, y_pred, verbose=True):
+    """
+    Calculate direct costs based on the confusion matrix.
+    
+    Assumptions:
+    - True Positives (TP): We intervene, cost = INTERVENTION_COST
+    - False Positives (FP): We intervene unnecessarily, cost = INTERVENTION_COST
+    - False Negatives (FN): We miss a readmission, cost = READMISSION_COST
+    - True Negatives (TN): No intervention, no readmission, cost = 0
+    """
+    # Get confusion matrix values
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+    
+    # Calculate costs for each category
+    cost_tp = tp * INTERVENTION_COST
+    cost_fp = fp * INTERVENTION_COST
+    cost_fn = fn * READMISSION_COST
+    cost_tn = 0  # No cost
+    
+    # Total cost
+    total_cost = cost_tp + cost_fp + cost_fn + cost_tn
+    
+    # Cost breakdown
+    if verbose:
+        print(f"\nCost Analysis:")
+        print(f"- TP (correct interventions): {tp} × ${INTERVENTION_COST} = ${cost_tp:,.2f}")
+        print(f"- FP (unnecessary interventions): {fp} × ${INTERVENTION_COST} = ${cost_fp:,.2f}")
+        print(f"- FN (missed readmissions): {fn} × ${READMISSION_COST} = ${cost_fn:,.2f}")
+        print(f"- TN (correct non-interventions): {tn} × $0 = $0.00")
+        print(f"- Total cost: ${total_cost:,.2f}")
+    
+    # Calculate minimum possible cost (perfect prediction)
+    min_cost = sum(y_true) * INTERVENTION_COST
+    
+    # Calculate cost of doing nothing (all negatives)
+    do_nothing_cost = sum(y_true) * READMISSION_COST
+    
+    if verbose:
+        print(f"\nBenchmarks:")
+        print(f"- Perfect prediction cost: ${min_cost:,.2f}")
+        print(f"- Cost of doing nothing: ${do_nothing_cost:,.2f}")
+        
+        if total_cost < do_nothing_cost:
+            savings = do_nothing_cost - total_cost
+            print(f"- Savings vs. doing nothing: ${savings:,.2f} ({savings/do_nothing_cost:.1%})")
+        else:
+            loss = total_cost - do_nothing_cost
+            print(f"- Loss vs. doing nothing: ${loss:,.2f} ({loss/do_nothing_cost:.1%})")
+    
+    return {
+        'total_cost': total_cost,
+        'min_cost': min_cost,
+        'do_nothing_cost': do_nothing_cost,
+        'confusion_matrix': cm,
+        'cost_detail': {
+            'tp': cost_tp,
+            'fp': cost_fp,
+            'fn': cost_fn,
+            'tn': cost_tn
+        }
+    }
+
 # Standard Random Forest Model (Baseline)
-# -------------------------------------
+# --------------------------------------
 print("\n" + "="*80)
 print("Baseline Random Forest Model (without cost sensitivity)")
 print("="*80)
@@ -274,64 +312,13 @@ print("\nConfusion Matrix:")
 cm_baseline = confusion_matrix(y_test, y_pred_baseline)
 print(cm_baseline)
 
-# Calculate the economic cost of this model
-tn, fp, fn, tp = cm_baseline.ravel()
-total_cost_baseline = (fn * READMISSION_COST) + (fp * FALSE_POSITIVE_COST)
-print(f"\nEconomic cost of baseline model: ${total_cost_baseline:,.2f}")
-print(f"- False Negatives (missed readmissions): {fn} cases at ${READMISSION_COST:,} each = ${fn * READMISSION_COST:,.2f}")
-print(f"- False Positives (unnecessary interventions): {fp} cases at ${FALSE_POSITIVE_COST} each = ${fp * FALSE_POSITIVE_COST:,.2f}")
+# Calculate costs for baseline model
+baseline_costs = calculate_costs(y_test, y_pred_baseline)
 
-# Cost-Sensitive Random Forest Model
-# ---------------------------------
+# Threshold Optimization for Cost Minimization
+# -------------------------------------------
 print("\n" + "="*80)
-print("Cost-Sensitive Random Forest Model")
-print("="*80)
-
-# Calculate class weights based on cost ratio
-class_weights = {0: 1, 1: COST_RATIO}
-print(f"Class weights: {class_weights}")
-
-# Create and train the cost-sensitive model
-rf_cost = RandomForestClassifier(
-    n_estimators=100, 
-    class_weight=class_weights,
-    random_state=42,
-    n_jobs=-1
-)
-
-rf_cost.fit(X_train_balanced, y_train_balanced)
-
-# Predict on test set
-y_pred_cost = rf_cost.predict(X_test)
-y_proba_cost = rf_cost.predict_proba(X_test)[:, 1]
-
-# Evaluate
-accuracy_cost = accuracy_score(y_test, y_pred_cost)
-print(f"Test accuracy: {accuracy_cost:.4f}")
-
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred_cost))
-
-print("\nConfusion Matrix:")
-cm_cost = confusion_matrix(y_test, y_pred_cost)
-print(cm_cost)
-
-# Calculate the economic cost of this model
-tn, fp, fn, tp = cm_cost.ravel()
-total_cost_cost = (fn * READMISSION_COST) + (fp * FALSE_POSITIVE_COST)
-print(f"\nEconomic cost of cost-sensitive model: ${total_cost_cost:,.2f}")
-print(f"- False Negatives (missed readmissions): {fn} cases at ${READMISSION_COST:,} each = ${fn * READMISSION_COST:,.2f}")
-print(f"- False Positives (unnecessary interventions): {fp} cases at ${FALSE_POSITIVE_COST} each = ${fp * FALSE_POSITIVE_COST:,.2f}")
-
-# Cost Improvement
-cost_improvement = total_cost_baseline - total_cost_cost
-cost_improvement_pct = (cost_improvement / total_cost_baseline) * 100
-print(f"\nCost improvement: ${cost_improvement:,.2f} ({cost_improvement_pct:.2f}%)")
-
-# Threshold Optimization
-# --------------------
-print("\n" + "="*80)
-print("Threshold Optimization")
+print("Threshold Optimization for Cost Minimization")
 print("="*80)
 
 # Calculate costs for different thresholds
@@ -339,14 +326,18 @@ thresholds = np.linspace(0.01, 0.99, 99)
 costs = []
 metrics = []
 
+print("Finding optimal threshold based on economic costs...")
 for threshold in thresholds:
+    # Get predictions at this threshold
     y_pred_threshold = (y_proba_baseline >= threshold).astype(int)
-    cm = confusion_matrix(y_test, y_pred_threshold)
-    tn, fp, fn, tp = cm.ravel()
     
-    # Calculate cost
-    cost = (fn * READMISSION_COST) + (fp * FALSE_POSITIVE_COST)
-    costs.append(cost)
+    # Calculate costs
+    cost_data = calculate_costs(y_test, y_pred_threshold, verbose=False)
+    costs.append(cost_data['total_cost'])
+    
+    # Calculate metrics
+    cm = cost_data['confusion_matrix']
+    tn, fp, fn, tp = cm.ravel()
     
     # Calculate metrics
     accuracy = (tp + tn) / (tp + tn + fp + fn)
@@ -355,7 +346,7 @@ for threshold in thresholds:
     
     metrics.append({
         'threshold': threshold,
-        'cost': cost,
+        'total_cost': cost_data['total_cost'],
         'accuracy': accuracy,
         'sensitivity': sensitivity,
         'specificity': specificity,
@@ -367,60 +358,90 @@ for threshold in thresholds:
 
 # Find the optimal threshold
 metrics_df = pd.DataFrame(metrics)
-optimal_idx = metrics_df['cost'].idxmin()
+optimal_idx = metrics_df['total_cost'].idxmin()  # Minimize total cost
 optimal_threshold = metrics_df.loc[optimal_idx, 'threshold']
-optimal_cost = metrics_df.loc[optimal_idx, 'cost']
+optimal_cost = metrics_df.loc[optimal_idx, 'total_cost']
 
 print(f"Optimal threshold: {optimal_threshold:.4f}")
 print(f"Cost at optimal threshold: ${optimal_cost:,.2f}")
 
 # Apply optimal threshold
 y_pred_optimal = (y_proba_baseline >= optimal_threshold).astype(int)
-cm_optimal = confusion_matrix(y_test, y_pred_optimal)
-tn, fp, fn, tp = cm_optimal.ravel()
 
 print("\nConfusion Matrix at Optimal Threshold:")
+cm_optimal = confusion_matrix(y_test, y_pred_optimal)
 print(cm_optimal)
 
 print("\nClassification Report at Optimal Threshold:")
 print(classification_report(y_test, y_pred_optimal))
 
-# Calculate the economic cost of optimal threshold model
-total_cost_optimal = (fn * READMISSION_COST) + (fp * FALSE_POSITIVE_COST)
-print(f"\nEconomic cost at optimal threshold: ${total_cost_optimal:,.2f}")
-print(f"- False Negatives (missed readmissions): {fn} cases at ${READMISSION_COST:,} each = ${fn * READMISSION_COST:,.2f}")
-print(f"- False Positives (unnecessary interventions): {fp} cases at ${FALSE_POSITIVE_COST} each = ${fp * FALSE_POSITIVE_COST:,.2f}")
+# Calculate detailed costs for optimal threshold
+optimal_costs = calculate_costs(y_test, y_pred_optimal)
+
+# Calculate cost-weighted class weights for a cost-sensitive model
+# ---------------------------------------------------------------
+print("\n" + "="*80)
+print("Cost-Weighted Random Forest Model")
+print("="*80)
+
+# Calculate class weights
+class_weights = {
+    0: 1.0,  # Weight for negative class
+    1: READMISSION_COST / INTERVENTION_COST  # Weight for positive class
+}
+
+print(f"Class weights based on cost ratio: {class_weights}")
+
+# Train a cost-weighted model
+rf_weighted = RandomForestClassifier(
+    n_estimators=100, 
+    class_weight=class_weights,
+    random_state=42,
+    n_jobs=-1
+)
+
+rf_weighted.fit(X_train_balanced, y_train_balanced)
+
+# Predict on test set
+y_pred_weighted = rf_weighted.predict(X_test)
+
+# Evaluate
+print("\nClassification Report for Cost-Weighted Model:")
+print(classification_report(y_test, y_pred_weighted))
+
+print("\nConfusion Matrix for Cost-Weighted Model:")
+cm_weighted = confusion_matrix(y_test, y_pred_weighted)
+print(cm_weighted)
+
+# Calculate costs for weighted model
+weighted_costs = calculate_costs(y_test, y_pred_weighted)
 
 # Visualization
 # ------------
 print("\nCreating visualizations...")
 
-# Plot ROC curves
+# Plot ROC curve
 plt.figure(figsize=(10, 8))
-# Standard model ROC
-fpr_baseline, tpr_baseline, _ = roc_curve(y_test, y_proba_baseline)
-roc_auc_baseline = auc(fpr_baseline, tpr_baseline)
-plt.plot(fpr_baseline, tpr_baseline, label=f'Baseline RF (AUC = {roc_auc_baseline:.3f})')
+fpr, tpr, _ = roc_curve(y_test, y_proba_baseline)
+roc_auc = auc(fpr, tpr)
+plt.plot(fpr, tpr, label=f'Random Forest (AUC = {roc_auc:.3f})')
 
-# Cost-sensitive model ROC
-fpr_cost, tpr_cost, _ = roc_curve(y_test, y_proba_cost)
-roc_auc_cost = auc(fpr_cost, tpr_cost)
-plt.plot(fpr_cost, tpr_cost, label=f'Cost-Sensitive RF (AUC = {roc_auc_cost:.3f})')
-
-# Optimal threshold point
-optimal_idx = np.argmin(np.abs(fpr_baseline - (1 - metrics_df.loc[optimal_idx, 'specificity'])))
-plt.scatter(fpr_baseline[optimal_idx], tpr_baseline[optimal_idx], marker='o', color='red', 
-            s=100, label=f'Optimal Threshold ({optimal_threshold:.2f})')
+# Optimal threshold point on ROC curve
+optimal_fpr_idx = np.argmin(np.abs(thresholds - optimal_threshold))
+optimal_fpr = metrics_df.loc[optimal_idx, 'fp'] / (metrics_df.loc[optimal_idx, 'fp'] + metrics_df.loc[optimal_idx, 'tn'])
+optimal_tpr = metrics_df.loc[optimal_idx, 'tp'] / (metrics_df.loc[optimal_idx, 'tp'] + metrics_df.loc[optimal_idx, 'fn'])
+plt.scatter(optimal_fpr, optimal_tpr, marker='o', color='red', s=100, 
+            label=f'Optimal Threshold ({optimal_threshold:.2f})')
 
 plt.plot([0, 1], [0, 1], 'k--')
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.title('ROC Curve with Economically Optimal Threshold')
 plt.legend(loc="lower right")
 plt.grid(True)
-plt.savefig('cost_sensitive_rf_roc_curve.png')
+plt.savefig('lower_cost_roc_curve.png')
 plt.close()
 
 # Plot costs by threshold
@@ -433,66 +454,182 @@ plt.ylabel('Total Cost ($)')
 plt.title('Total Cost by Classification Threshold')
 plt.grid(True)
 plt.legend()
-plt.savefig('cost_by_threshold.png')
+plt.savefig('lower_cost_by_threshold.png')
 plt.close()
 
-# Plot feature importance for cost-sensitive model
-feature_importance = rf_cost.feature_importances_
-sorted_idx = np.argsort(feature_importance)[-15:]  # Top 15 features
-plt.figure(figsize=(10, 12))
-plt.barh(range(len(sorted_idx)), feature_importance[sorted_idx], align='center')
-plt.yticks(range(len(sorted_idx)), np.array(X.columns)[sorted_idx])
-plt.xlabel('Feature Importance')
-plt.title('Top 15 Features in Cost-Sensitive Random Forest Model')
+# Cost comparison between all models
+models = ['Baseline RF', 'Optimal Threshold RF', 'Cost-Weighted RF']
+model_costs = [baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']]
+baseline_cost = baseline_costs['do_nothing_cost']
+
+plt.figure(figsize=(12, 8))
+bars = plt.bar(models, model_costs)
+plt.axhline(y=baseline_cost, color='r', linestyle='-', label='Do Nothing Cost')
+plt.xlabel('Model')
+plt.ylabel('Total Cost ($)')
+plt.title('Cost Comparison Between Models')
+plt.grid(True, axis='y')
+plt.legend()
+
+# Add values on bars
+for i, bar in enumerate(bars):
+    height = bar.get_height()
+    savings = baseline_cost - height
+    savings_pct = (savings / baseline_cost) * 100
+    plt.text(bar.get_x() + bar.get_width()/2., height + 5000000,
+             f'${height:,.0f}\n(-${savings:,.0f}, {savings_pct:.1f}%)',
+             ha='center', va='bottom', rotation=0)
+
 plt.tight_layout()
-plt.savefig('cost_sensitive_rf_feature_importance.png')
+plt.savefig('lower_cost_model_comparison.png')
 plt.close()
 
-# Summary and Comparison
-# ---------------------
+# Cost-threshold relation with intervention percentage
+plt.figure(figsize=(12, 8))
+
+# Primary axis for cost
+ax1 = plt.gca()
+ax1.plot(thresholds, metrics_df['total_cost'] / 1e6, 'b-', linewidth=2, label='Total Cost ($ millions)')
+ax1.set_xlabel('Threshold')
+ax1.set_ylabel('Cost ($ millions)')
+ax1.tick_params(axis='y', labelcolor='b')
+ax1.axvline(x=optimal_threshold, color='purple', linestyle='--', 
+            label=f'Optimal Threshold = {optimal_threshold:.2f}')
+
+# Secondary axis for percentage of population
+ax2 = ax1.twinx()
+intervention_pcts = [(metrics_df.loc[i, 'tp'] + metrics_df.loc[i, 'fp']) / len(y_test) * 100 
+                       for i in range(len(metrics_df))]
+ax2.plot(thresholds, intervention_pcts, 'g-', linewidth=2, label='% of Population Receiving Intervention')
+ax2.set_ylabel('% of Population')
+ax2.tick_params(axis='y', labelcolor='g')
+
+# Combine legends
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+
+plt.title('Total Cost and Intervention Coverage by Threshold')
+plt.grid(True)
+plt.tight_layout()
+plt.savefig('lower_cost_threshold_coverage.png')
+plt.close()
+
+# Summary
+# ------
 print("\n" + "="*80)
-print("Model Comparison Summary")
+print("Summary of Results with Lower Cost Scenario")
 print("="*80)
 
-# Create a summary table
+# Calculate cost vs. doing nothing for all models
+baseline_vs_nothing = baseline_costs['total_cost'] - baseline_costs['do_nothing_cost']
+optimal_vs_nothing = optimal_costs['total_cost'] - optimal_costs['do_nothing_cost']
+weighted_vs_nothing = weighted_costs['total_cost'] - weighted_costs['do_nothing_cost']
+
+# Calculate intervention percentages
+baseline_intervention_pct = (cm_baseline[0,1] + cm_baseline[1,1]) / len(y_test) * 100
+optimal_intervention_pct = (cm_optimal[0,1] + cm_optimal[1,1]) / len(y_test) * 100
+weighted_intervention_pct = (cm_weighted[0,1] + cm_weighted[1,1]) / len(y_test) * 100
+
+# Create summary dataframe
 summary = pd.DataFrame({
-    'Model': ['Baseline RF', 'Cost-Sensitive RF', 'Optimal Threshold RF'],
+    'Model': ['Baseline RF', 'Optimal Threshold RF', 'Cost-Weighted RF', 'Do Nothing'],
+    'Threshold': [0.5, optimal_threshold, 'Cost-weighted', 'N/A'],
     'Accuracy': [
         accuracy_score(y_test, y_pred_baseline),
-        accuracy_score(y_test, y_pred_cost),
-        accuracy_score(y_test, y_pred_optimal)
+        accuracy_score(y_test, y_pred_optimal),
+        accuracy_score(y_test, y_pred_weighted),
+        accuracy_score(y_test, np.zeros_like(y_test))  # All negative
     ],
-    'Sensitivity (Recall)': [
+    'Sensitivity': [
         cm_baseline[1,1] / (cm_baseline[1,0] + cm_baseline[1,1]),
-        cm_cost[1,1] / (cm_cost[1,0] + cm_cost[1,1]),
-        cm_optimal[1,1] / (cm_optimal[1,0] + cm_optimal[1,1])
+        cm_optimal[1,1] / (cm_optimal[1,0] + cm_optimal[1,1]),
+        cm_weighted[1,1] / (cm_weighted[1,0] + cm_weighted[1,1]),
+        0.0  # Do nothing has 0 sensitivity
     ],
     'Specificity': [
         cm_baseline[0,0] / (cm_baseline[0,0] + cm_baseline[0,1]),
-        cm_cost[0,0] / (cm_cost[0,0] + cm_cost[0,1]),
-        cm_optimal[0,0] / (cm_optimal[0,0] + cm_optimal[0,1])
+        cm_optimal[0,0] / (cm_optimal[0,0] + cm_optimal[0,1]),
+        cm_weighted[0,0] / (cm_weighted[0,0] + cm_weighted[0,1]),
+        1.0  # Do nothing has 100% specificity
+    ],
+    '% Intervened': [
+        baseline_intervention_pct,
+        optimal_intervention_pct,
+        weighted_intervention_pct,
+        0.0  # Do nothing: 0% intervention
     ],
     'Total Cost ($)': [
-        total_cost_baseline,
-        total_cost_cost,
-        total_cost_optimal
+        baseline_costs['total_cost'],
+        optimal_costs['total_cost'],
+        weighted_costs['total_cost'],
+        baseline_costs['do_nothing_cost']  # Cost of doing nothing
+    ],
+    'Savings ($)': [
+        -baseline_vs_nothing if baseline_vs_nothing < 0 else baseline_vs_nothing,
+        -optimal_vs_nothing if optimal_vs_nothing < 0 else optimal_vs_nothing,
+        -weighted_vs_nothing if weighted_vs_nothing < 0 else weighted_vs_nothing,
+        0
+    ],
+    'Savings (%)': [
+        ((-baseline_vs_nothing if baseline_vs_nothing < 0 else baseline_vs_nothing) / baseline_costs['do_nothing_cost']) * 100,
+        ((-optimal_vs_nothing if optimal_vs_nothing < 0 else optimal_vs_nothing) / baseline_costs['do_nothing_cost']) * 100,
+        ((-weighted_vs_nothing if weighted_vs_nothing < 0 else weighted_vs_nothing) / weighted_costs['do_nothing_cost']) * 100,
+        0
     ]
 })
 
-# Format and display the summary
+# Format for display
 summary['Accuracy'] = summary['Accuracy'].map('{:.1%}'.format)
-summary['Sensitivity (Recall)'] = summary['Sensitivity (Recall)'].map('{:.1%}'.format)
+summary['Sensitivity'] = summary['Sensitivity'].map('{:.1%}'.format)
 summary['Specificity'] = summary['Specificity'].map('{:.1%}'.format)
+summary['% Intervened'] = summary['% Intervened'].map('{:.1f}%'.format)
+summary['Threshold'] = summary['Threshold'].apply(lambda x: f"{x:.4f}" if isinstance(x, float) else x)
 summary['Total Cost ($)'] = summary['Total Cost ($)'].map('${:,.2f}'.format)
+summary['Savings ($)'] = summary['Savings ($)'].map('${:,.2f}'.format)
+summary['Savings (%)'] = summary['Savings (%)'].map('{:.1f}%'.format)
 
 print(summary.to_string(index=False))
 
 print("\nSaved visualizations:")
-print("1. cost_sensitive_rf_roc_curve.png - ROC curves with optimal threshold")
-print("2. cost_by_threshold.png - Cost vs threshold analysis")
-print("3. cost_sensitive_rf_feature_importance.png - Feature importance in cost-sensitive model")
+print("1. lower_cost_roc_curve.png - ROC curve with optimal threshold")
+print("2. lower_cost_by_threshold.png - Cost vs threshold analysis")
+print("3. lower_cost_model_comparison.png - Cost comparison between models")
+print("4. lower_cost_threshold_coverage.png - Cost and intervention coverage by threshold")
 
 print("\nConclusion:")
-print("The cost-sensitive approach successfully reduces the economic impact of prediction errors.")
-print("While accuracy may decrease, the overall cost to the healthcare system is minimized.")
-print("The optimal threshold approach provides the lowest total cost solution.") 
+do_nothing_cost = baseline_costs['do_nothing_cost']
+best_model_idx = [baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']].index(
+    min([baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']])
+)
+best_model_name = ['Baseline RF', 'Optimal Threshold RF', 'Cost-Weighted RF'][best_model_idx]
+best_model_cost = [baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']][best_model_idx]
+best_savings = do_nothing_cost - best_model_cost
+
+print(f"With the new cost structure (readmission: ${READMISSION_COST:,}, intervention: ${INTERVENTION_COST:,}):")
+print(f"1. The best model is the {best_model_name}")
+print(f"2. It provides savings of ${best_savings:,.2f} ({best_savings/do_nothing_cost:.1%} reduction)")
+
+if best_model_name == 'Optimal Threshold RF':
+    intervention_pct = optimal_intervention_pct
+    print(f"3. The optimal threshold is {optimal_threshold:.4f}")
+    print(f"4. With this threshold, we would intervene with {intervention_pct:.1f}% of patients")
+    
+    # Calculate return on investment
+    tp = cm_optimal[1,1]  # True positives
+    fp = cm_optimal[0,1]  # False positives
+    investment = (tp + fp) * INTERVENTION_COST
+    return_avoided = tp * READMISSION_COST
+    roi = (return_avoided - investment) / investment
+    print(f"5. The ROI on interventions is {roi:.1%}")
+    
+    # Calculate break-even intervention cost
+    sensitivity_value = float(summary['Sensitivity'][1].rstrip('%')) / 100
+    break_even_cost = READMISSION_COST * sensitivity_value
+    print(f"6. The break-even intervention cost would be ${break_even_cost:.2f}")
+elif best_model_name == 'Cost-Weighted RF':
+    print(f"3. This model uses class weights of {class_weights}")
+    intervention_pct = weighted_intervention_pct
+    print(f"4. With this approach, we would intervene with {intervention_pct:.1f}% of patients")
+else:
+    print(f"3. With low intervention costs, even the standard threshold of 0.5 is economically beneficial") 
