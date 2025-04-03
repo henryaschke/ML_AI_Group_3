@@ -1,19 +1,23 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# %% [markdown]
 """
-Cost-Sensitive Random Forest Model with Lower Cost Scenario
-==========================================================
-This script implements a Random Forest model with a different cost structure:
-- Lower cost of missed readmission: $11,000 (instead of $15,000)
-- Much lower cost of prevention intervention: $2,800 (instead of $6,600 or $8,400)
+# Random Forest Model with Cost-Based Optimization
 
-This represents a scenario where readmissions are less costly but interventions are 
-significantly more affordable, potentially making them economically viable for more patients.
+A modified Random Forest model that considers:
+- Readmission cost: $11,000 
+- Intervention cost: $2,800
+
+This explores a scenario with lower readmission costs and more affordable interventions.
 """
 
-# Import Libraries
-# ----------------
+# %% [markdown]
+"""
+## Setup
+"""
+
+# %%
 import pandas as pd
 import numpy as np
 import re
@@ -28,30 +32,29 @@ from sklearn.metrics import (
     roc_curve, auc
 )
 
-# Visualization settings
+# Plot settings
 sns.set(style="whitegrid")
-plt.style.use('seaborn-v0_8-whitegrid')  # Updated style for newer matplotlib versions
-
-# For reproducibility
+plt.style.use('seaborn-v0_8-whitegrid')
 np.random.seed(100)
 
-print("Cost-Sensitive Random Forest Model with Lower Cost Scenario")
-print("="*80)
-
-# Cost Parameters
-# --------------
-READMISSION_COST = 11000  # Lower cost of a readmission in dollars
-INTERVENTION_COST = 4000  # Much lower cost of preventive intervention
+# Cost settings
+READMISSION_COST = 11000
+INTERVENTION_COST = 4000
 
 print(f"Cost parameters:")
 print(f"- Readmission cost: ${READMISSION_COST}")
 print(f"- Intervention cost: ${INTERVENTION_COST}")
 print(f"- Net benefit per prevented readmission: ${READMISSION_COST - INTERVENTION_COST}")
-print(f"- Cost ratio (readmission:intervention): {READMISSION_COST/INTERVENTION_COST:.1f}:1")
+print(f"- Cost ratio: {READMISSION_COST/INTERVENTION_COST:.1f}:1")
 print("")
 
-# Load and Preprocess Data
-# -----------------------
+# %% [markdown]
+"""
+## Load and Preprocess Data
+"""
+
+# %%
+# Load Data
 try:
     df = pd.read_csv('diabetic_readmission_data.csv')
     print(f"Dataset dimensions: {df.shape}")
@@ -60,6 +63,12 @@ except FileNotFoundError:
     print("Please ensure 'diabetic_readmission_data.csv' is in the working directory.")
     exit(1)
 
+# %% [markdown]
+"""
+### Data Preprocessing Steps
+"""
+
+# %%
 # Data Preprocessing 
 print("Preprocessing data...")
 
@@ -72,10 +81,11 @@ df_processed = df_processed.replace('Unknown/Invalid', np.nan)
 columns_to_drop = ['weight', 'payer_code', 'medical_specialty', 'examide', 'citoglipton']
 df_processed = df_processed.drop(columns=columns_to_drop, errors='ignore')
 
-# Remove encounters with death outcomes
+# Exclude patients who died during their stay
 death_discharge_ids = [11, 13, 14, 19, 20, 21]
 df_processed = df_processed[~df_processed['discharge_disposition_id'].isin(death_discharge_ids)]
 
+# %%
 # Process diagnosis codes
 def categorize_diagnosis(code):
     if pd.isna(code) or code == '':
@@ -113,6 +123,7 @@ def categorize_diagnosis(code):
 for col in ['diag_1', 'diag_2', 'diag_3']:
     df_processed[f'{col}_category'] = df_processed[col].apply(categorize_diagnosis)
 
+# %%
 # Process age
 def age_to_midpoint(age_bracket):
     if pd.isna(age_bracket):
@@ -126,6 +137,12 @@ def age_to_midpoint(age_bracket):
 
 df_processed['age_midpoint'] = df_processed['age'].apply(age_to_midpoint)
 
+# %% [markdown]
+"""
+### Feature Engineering and Encoding
+"""
+
+# %%
 # Encode categorical variables
 df_encoded = df_processed.copy()
 categorical_columns = [
@@ -162,16 +179,7 @@ df_encoded['readmitted_binary'] = df_encoded['readmitted'].map({'<30': 1, '>30':
 # Feature Selection
 print("Selecting features...")
 
-# Select features
-available_features = []
-for feat in df_encoded.columns:
-    # Skip IDs, original target, and diagnosis codes
-    if feat in ['encounter_id', 'patient_nbr', 'readmitted', 'diag_1', 'diag_2', 'diag_3', 'age', 'readmitted_binary']:
-        continue
-    
-    # Only keep numeric columns
-    if pd.api.types.is_numeric_dtype(df_encoded[feat]):
-        available_features.append(feat)
+# Use Random Forest importance and RFE for feature selection
 
 # Prepare data for modeling
 X = df_encoded[available_features]
@@ -204,6 +212,12 @@ readmit_percent = y.value_counts(normalize=True) * 100
 print(f"No Readmission (0): {readmit_counts[0]} ({readmit_percent[0]:.2f}%)")
 print(f"Readmission (1): {readmit_counts[1]} ({readmit_percent[1]:.2f}%)")
 
+# %% [markdown]
+"""
+### Split Data and Apply SMOTE
+"""
+
+# %%
 # Split the data
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=100, stratify=y
@@ -217,8 +231,12 @@ print("\nTraining set after SMOTE balancing:")
 print(f"No Readmission (0): {sum(y_train_balanced == 0)} (50.0%)")
 print(f"Readmission (1): {sum(y_train_balanced == 1)} (50.0%)")
 
-# Simple Cost Calculation Function
-# -------------------------------
+# %% [markdown]
+"""
+## Cost Calculation Function
+"""
+
+# %%
 def calculate_costs(y_true, y_pred, verbose=True):
     """
     Calculate direct costs based on the confusion matrix.
@@ -282,8 +300,12 @@ def calculate_costs(y_true, y_pred, verbose=True):
         }
     }
 
-# Standard Random Forest Model (Baseline)
-# --------------------------------------
+# %% [markdown]
+"""
+## Baseline Random Forest Model
+"""
+
+# %%
 print("\n" + "="*80)
 print("Baseline Random Forest Model (without cost sensitivity)")
 print("="*80)
@@ -315,8 +337,12 @@ print(cm_baseline)
 # Calculate costs for baseline model
 baseline_costs = calculate_costs(y_test, y_pred_baseline)
 
-# Threshold Optimization for Cost Minimization
-# -------------------------------------------
+# %% [markdown]
+"""
+## Threshold Optimization for Cost Minimization
+"""
+
+# %%
 print("\n" + "="*80)
 print("Threshold Optimization for Cost Minimization")
 print("="*80)
@@ -356,6 +382,7 @@ for threshold in thresholds:
         'tp': tp
     })
 
+# %%
 # Find the optimal threshold
 metrics_df = pd.DataFrame(metrics)
 optimal_idx = metrics_df['total_cost'].idxmin()  # Minimize total cost
@@ -378,8 +405,12 @@ print(classification_report(y_test, y_pred_optimal))
 # Calculate detailed costs for optimal threshold
 optimal_costs = calculate_costs(y_test, y_pred_optimal)
 
-# Calculate cost-weighted class weights for a cost-sensitive model
-# ---------------------------------------------------------------
+# %% [markdown]
+"""
+## Cost-Weighted Random Forest Model
+"""
+
+# %%
 print("\n" + "="*80)
 print("Cost-Weighted Random Forest Model")
 print("="*80)
@@ -416,8 +447,12 @@ print(cm_weighted)
 # Calculate costs for weighted model
 weighted_costs = calculate_costs(y_test, y_pred_weighted)
 
-# Visualization
-# ------------
+# %% [markdown]
+"""
+## Visualizations
+"""
+
+# %%
 print("\nCreating visualizations...")
 
 # Plot ROC curve
@@ -444,6 +479,7 @@ plt.grid(True)
 plt.savefig('lower_cost_roc_curve.png')
 plt.close()
 
+# %%
 # Plot costs by threshold
 plt.figure(figsize=(10, 8))
 plt.plot(thresholds, costs)
@@ -457,6 +493,7 @@ plt.legend()
 plt.savefig('lower_cost_by_threshold.png')
 plt.close()
 
+# %%
 # Cost comparison between all models
 models = ['Baseline RF', 'Optimal Threshold RF', 'Cost-Weighted RF']
 model_costs = [baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']]
@@ -484,6 +521,7 @@ plt.tight_layout()
 plt.savefig('lower_cost_model_comparison.png')
 plt.close()
 
+# %%
 # Cost-threshold relation with intervention percentage
 plt.figure(figsize=(12, 8))
 
@@ -515,8 +553,12 @@ plt.tight_layout()
 plt.savefig('lower_cost_threshold_coverage.png')
 plt.close()
 
-# Summary
-# ------
+# %% [markdown]
+"""
+## Summary of Results
+"""
+
+# %%
 print("\n" + "="*80)
 print("Summary of Results with Lower Cost Scenario")
 print("="*80)
@@ -597,6 +639,12 @@ print("2. lower_cost_by_threshold.png - Cost vs threshold analysis")
 print("3. lower_cost_model_comparison.png - Cost comparison between models")
 print("4. lower_cost_threshold_coverage.png - Cost and intervention coverage by threshold")
 
+# %% [markdown]
+"""
+## Conclusion
+"""
+
+# %%
 print("\nConclusion:")
 do_nothing_cost = baseline_costs['do_nothing_cost']
 best_model_idx = [baseline_costs['total_cost'], optimal_costs['total_cost'], weighted_costs['total_cost']].index(
@@ -633,3 +681,4 @@ elif best_model_name == 'Cost-Weighted RF':
     print(f"4. With this approach, we would intervene with {intervention_pct:.1f}% of patients")
 else:
     print(f"3. With low intervention costs, even the standard threshold of 0.5 is economically beneficial") 
+# %%
